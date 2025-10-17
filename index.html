@@ -1235,6 +1235,7 @@
         productSize: typeof specs.productSize === 'string' ? specs.productSize : '',
         roomType: typeof specs.roomType === 'string' ? specs.roomType : ''
       };
+
       return {
         id,
         name,
@@ -1500,6 +1501,22 @@
       return data;
     }
 
+    // 将图片引用规范化为相对于 index.html 的路径
+    // 规则：
+    // - data: URI、http(s):// 或以 / 开头 的绝对路径保持不变
+    // - 已包含路径分隔符（/）的相对路径保持不变
+    // - 其他纯文件名（例如 "work-abc.jpg"）会自动前缀为 "images/<filename>"
+    function normalizeImageSrc(src) {
+      if (!src || typeof src !== 'string') return src;
+      const trimmed = src.trim();
+      if (!trimmed) return trimmed;
+      if (/^data:/i.test(trimmed)) return trimmed;
+      if (/^https?:\/\//i.test(trimmed)) return trimmed;
+      if (trimmed.startsWith('/')) return trimmed;
+      // 若是包含路径分隔符，则认为已提供相对路径；若是裸文件名也保留原样（不自动添加目录前缀）
+      return trimmed;
+    }
+
     function loadData() {
       try {
         const saved = window.localStorage.getItem(STORAGE_KEY);
@@ -1569,7 +1586,79 @@
           // console.debug('尝试加载远程数据失败：', path, error);
         }
       }
+      // 如果远程 JSON 未找到，可回退到页面内嵌的图片清单（如果存在）
+      // 支持两种 manifest 格式：
+      // 1) 简单数组： window.EMBEDDED_IMAGE_MANIFEST = ['images/1.png', 'images/2.png']
+      // 2) 详细数组： window.EMBEDDED_IMAGE_MANIFEST = [{src: 'images/1.png', title: '作品A', desc: '说明'}, ...]
+      try {
+        if (Array.isArray(window.EMBEDDED_IMAGE_MANIFEST) && window.EMBEDDED_IMAGE_MANIFEST.length) {
+          const built = buildDataFromImageManifest(window.EMBEDDED_IMAGE_MANIFEST);
+          if (built) {
+            state.data = built;
+            try { saveData(state.data); } catch (e) { console.warn('保存内嵌 manifest 到 localStorage 失败', e); }
+            console.info('已使用页面内嵌图片清单构建数据。');
+            return true;
+          }
+        }
+      } catch (e) {
+        console.warn('使用内嵌图片清单构建数据时出错。', e);
+      }
+
       return false;
+    }
+
+    // 根据页面内嵌的图片清单构建最小化的 state.data
+    function buildDataFromImageManifest(manifest) {
+      try {
+        const categories = [];
+        const works = [];
+        manifest.forEach((item, idx) => {
+          if (!item) return;
+          if (typeof item === 'string') {
+            const id = `img-${idx + 1}`;
+            works.push({
+              id: `work-${id}`,
+              name: `作品 ${idx + 1}`,
+              description: '',
+              location: '',
+              area: '',
+              year: '',
+              interiorArea: '',
+              footprint: '',
+              productSize: '',
+              roomType: '',
+              coverId: `${id}`,
+              images: [{ id: id, alt: '', src: item, transform: defaultImageTransform() }]
+            });
+          } else if (typeof item === 'object' && item.src) {
+            const id = item.id || `img-${idx + 1}`;
+            works.push({
+              id: `work-${id}`,
+              name: item.title || `作品 ${idx + 1}`,
+              description: item.desc || '',
+              location: item.location || '',
+              area: item.area || '',
+              year: item.year || '',
+              interiorArea: item.interiorArea || '',
+              footprint: item.footprint || '',
+              productSize: item.productSize || '',
+              roomType: item.roomType || '',
+              coverId: id,
+              images: [{ id: id, alt: item.alt || '', src: item.src, transform: defaultImageTransform() }]
+            });
+          }
+        });
+
+        if (!works.length) return null;
+        categories.push({ id: 'cat-embedded', name: '内嵌图片', description: '', works });
+
+        const data = buildDefaultData();
+        data.categories = categories;
+        return ensureDataSchema(data);
+      } catch (e) {
+        console.warn('构建内嵌 manifest 数据失败', e);
+        return null;
+      }
     }
 
     function defaultAdminState() {
@@ -3155,7 +3244,7 @@
                   else if (/webp/i.test(mime)) ext = 'webp';
                   else if (/gif/i.test(mime)) ext = 'gif';
 
-                  img.src = `images/${img.id || uid('img')}.${ext}`;
+                  img.src = `${img.id || uid('img')}.${ext}`;
                 } else {
                   // 非 data: 的本地或相对路径：如果含有 data uri-like encoding, leave as-is; otherwise keep relative path
                   // Normalize by leaving it as-is (relative paths preserved)
